@@ -1,0 +1,27 @@
+{
+    "name": "pi-zulip-bridge",
+    "version": "2.0.0",
+    "description": "Bridge between Pi Coding Agent and Zulip chat platform",
+    "type": "module",
+    "main": "dist/main.js",
+    "scripts": {
+        "dev": "tsx src/main.ts",
+        "build": "tsc",
+        "start": "node dist/main.js"
+    },
+    "dependencies": {
+        "@mariozechner/pi-agent-core": "latest",
+        "@mariozechner/pi-coding-agent": "latest",
+        "@mariozechner/pi-ai": "latest",
+        "croner": "^9.0.0",
+        "dotenv": "^16.4.0"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "tsx": "^4.19.0",
+        "typescript": "^5.7.0"
+    },
+    "engines": {
+        "node": ">=20"
+    }
+}
