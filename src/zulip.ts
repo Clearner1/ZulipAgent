@@ -92,6 +92,7 @@ export class ZulipBot {
     async connect(): Promise<void> {
         const result = await this.api("POST", "/register", {
             event_types: JSON.stringify(["message"]),
+            all_public_streams: "true",
         });
         this.queueId = result.queue_id;
         this.lastEventId = result.last_event_id;
@@ -138,8 +139,9 @@ export class ZulipBot {
                 this.lastEventId = event.id;
                 if (event.type === "message") {
                     const msg = event.message;
-                    // Skip our own messages
+                    // Skip our own messages and all other bot messages
                     if (msg.sender_email === this.config.zulipBotEmail) continue;
+                    if (msg.sender_is_bot) continue;
 
                     messages.push({
                         id: msg.id,
@@ -211,6 +213,27 @@ export class ZulipBot {
         } catch {
             // Typing indicators are best-effort
         }
+    }
+
+    // --- Stream & Topic discovery ---
+
+    /**
+     * Get all streams the bot is subscribed to / can see.
+     */
+    async getSubscribedStreams(): Promise<{ streamId: number; name: string }[]> {
+        const result = await this.api("GET", "/streams");
+        return (result.streams || []).map((s: any) => ({
+            streamId: s.stream_id,
+            name: s.name,
+        }));
+    }
+
+    /**
+     * Get all topics in a stream.
+     */
+    async getTopics(streamId: number): Promise<string[]> {
+        const result = await this.api("GET", `/users/me/${streamId}/topics`);
+        return (result.topics || []).map((t: any) => t.name as string);
     }
 
     // --- Lifecycle ---

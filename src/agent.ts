@@ -7,7 +7,7 @@
  */
 
 import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
-import { getModel } from "@mariozechner/pi-ai";
+// getModel no longer needed — we build custom models from config
 import {
     AgentSession,
     AuthStorage,
@@ -19,7 +19,7 @@ import {
     SessionManager,
     ModelRegistry,
     type Skill,
-    codingTools,
+    createCodingTools,
 } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync, mkdirSync } from "fs";
 import { writeFile, mkdir } from "fs/promises";
@@ -29,9 +29,28 @@ import { join, resolve } from "path";
 import type { BridgeConfig } from "./config.js";
 import { syncLogToSessionManager, BridgeSettingsManager } from "./context.js";
 import type { ChannelStore } from "./store.js";
+import type { Model, Api } from "@mariozechner/pi-ai";
 
-// Hardcoded model — same as mom
-const model = getModel("anthropic", "claude-sonnet-4-5");
+// Build model from config — supports custom base URL and model name
+function buildModel(config: BridgeConfig): Model<"anthropic-messages"> {
+    return {
+        id: config.llmModel,
+        name: config.llmModel,
+        api: "anthropic-messages" as const,
+        provider: config.llmProvider,
+        baseUrl: config.llmBaseUrl,
+        reasoning: false,
+        input: ["text", "image"] as ("text" | "image")[],
+        cost: {
+            input: 3,
+            output: 15,
+            cacheRead: 0.3,
+            cacheWrite: 3.75,
+        },
+        contextWindow: 200000,
+        maxTokens: 64000,
+    };
+}
 
 // ============================================================================
 // Types
@@ -126,6 +145,7 @@ function buildSystemPrompt(
 - For current date/time, use: date
 - You have access to previous conversation context including tool results from prior turns.
 - For older history beyond your context, search log.jsonl.
+- **Important**: For queries about tasks, diary, or any real-time data, ALWAYS re-run the tool/script to get fresh data. Never reuse results from previous turns — the data may have changed.
 
 ## Zulip Formatting (Markdown)
 Bold: **text**, Italic: *text*, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: [text](url)
@@ -304,14 +324,17 @@ function createRunner(
     const sessionManager = SessionManager.open(contextFile, topicDir);
     const settingsManager = new BridgeSettingsManager(workspaceDir);
 
-    // Auth storage
+    // Auth storage — register our custom API key so AgentSession can find it
     const authStorage = new AuthStorage(join(homedir(), ".pi", "zulip-bridge", "auth.json"));
+    authStorage.setRuntimeApiKey(config.llmProvider, config.llmApiKey);
     const modelRegistry = new ModelRegistry(authStorage);
 
-    // Tools: use standard coding tools
-    const tools = codingTools;
+    // Tools: use standard coding tools with Downloads as working directory
+    const agentCwd = "/Users/loumac/Downloads";
+    const tools = createCodingTools(agentCwd);
 
     // Create agent
+    const model = buildModel(config);
     const agent = new Agent({
         initialState: {
             systemPrompt,
@@ -321,12 +344,7 @@ function createRunner(
         },
         convertToLlm,
         getApiKey: async () => {
-            // Try env var first, then auth storage
-            const envKey = process.env.ANTHROPIC_API_KEY;
-            if (envKey) return envKey;
-            const stored = await authStorage.getApiKey("anthropic");
-            if (stored) return stored;
-            throw new Error("No Anthropic API key. Set ANTHROPIC_API_KEY env var.");
+            return config.llmApiKey;
         },
     });
 
@@ -358,7 +376,7 @@ function createRunner(
         agent,
         sessionManager,
         settingsManager: settingsManager as any,
-        cwd: process.cwd(),
+        cwd: agentCwd,
         modelRegistry,
         resourceLoader,
         baseToolsOverride,

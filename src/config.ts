@@ -9,6 +9,12 @@ export interface BridgeConfig {
     zulipBotEmail: string;
     zulipBotApiKey: string;
 
+    // LLM
+    llmApiKey: string;
+    llmBaseUrl: string;
+    llmProvider: string;
+    llmModel: string;
+
     // Workspace
     workingDir: string;
 
@@ -32,6 +38,10 @@ export function loadConfig(): BridgeConfig {
         zulipUrl: requireEnv("ZULIP_URL"),
         zulipBotEmail: requireEnv("ZULIP_BOT_EMAIL"),
         zulipBotApiKey: requireEnv("ZULIP_BOT_API_KEY"),
+        llmApiKey: requireEnv("LLM_API_KEY"),
+        llmBaseUrl: process.env.LLM_BASE_URL || "https://api.anthropic.com",
+        llmProvider: process.env.LLM_PROVIDER || "anthropic",
+        llmModel: process.env.LLM_MODEL || "claude-sonnet-4-5",
         workingDir: process.env.WORKING_DIR || "./data",
         triggerWord: process.env.TRIGGER_WORD || "",
     };

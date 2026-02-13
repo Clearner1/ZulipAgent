@@ -172,66 +172,127 @@ export class BridgeSettingsManager {
         }
     }
 
+    // Lifecycle
+    reload(): void { this.settings = this.load(); }
+    applyOverrides(_overrides: Record<string, unknown>): void { }
+
+    // Settings accessors (global/project)
+    getGlobalSettings(): Record<string, unknown> { return { ...this.settings }; }
+    getProjectSettings(): Record<string, unknown> { return {}; }
+
+    // Compaction
     getCompactionSettings() {
         return { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 };
     }
-
-    getCompactionEnabled(): boolean {
-        return true;
-    }
-
+    getCompactionEnabled(): boolean { return true; }
     setCompactionEnabled(_enabled: boolean): void { }
+    getCompactionReserveTokens(): number { return 16384; }
+    getCompactionKeepRecentTokens(): number { return 20000; }
 
+    // Branch summary
+    getBranchSummarySettings() {
+        return { reserveTokens: 16384 };
+    }
+
+    // Retry
     getRetrySettings() {
-        return { enabled: true, maxRetries: 3, baseDelayMs: 2000 };
+        return { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxDelayMs: 60000 };
     }
-
-    getRetryEnabled(): boolean {
-        return true;
-    }
-
+    getRetryEnabled(): boolean { return true; }
     setRetryEnabled(_enabled: boolean): void { }
 
-    getDefaultModel(): string | undefined {
-        return this.settings.defaultModel;
-    }
-
-    getDefaultProvider(): string | undefined {
-        return this.settings.defaultProvider;
-    }
-
+    // Model & provider
+    getDefaultModel(): string | undefined { return this.settings.defaultModel; }
+    getDefaultProvider(): string | undefined { return this.settings.defaultProvider; }
+    setDefaultModel(_modelId: string): void { }
+    setDefaultProvider(_provider: string): void { }
     setDefaultModelAndProvider(provider: string, modelId: string): void {
         this.settings.defaultProvider = provider;
         this.settings.defaultModel = modelId;
         this.save();
     }
 
-    getDefaultThinkingLevel(): string {
+    // Thinking level
+    getDefaultThinkingLevel(): string | undefined {
         return this.settings.defaultThinkingLevel || "off";
     }
-
     setDefaultThinkingLevel(level: string): void {
         this.settings.defaultThinkingLevel = level as BridgeSettings["defaultThinkingLevel"];
         this.save();
     }
+    getThinkingBudgets(): undefined { return undefined; }
 
-    getSteeringMode(): "all" | "one-at-a-time" {
-        return "one-at-a-time";
-    }
-
+    // Steering / follow-up mode
+    getSteeringMode(): "all" | "one-at-a-time" { return "one-at-a-time"; }
     setSteeringMode(_mode: "all" | "one-at-a-time"): void { }
-
-    getFollowUpMode(): "all" | "one-at-a-time" {
-        return "one-at-a-time";
-    }
-
+    getFollowUpMode(): "all" | "one-at-a-time" { return "one-at-a-time"; }
     setFollowUpMode(_mode: "all" | "one-at-a-time"): void { }
 
-    getHookPaths(): string[] {
-        return [];
-    }
+    // Theme
+    getTheme(): string | undefined { return undefined; }
+    setTheme(_theme: string): void { }
 
-    getHookTimeout(): number {
-        return 30000;
-    }
+    // Hooks
+    getHookPaths(): string[] { return []; }
+    getHookTimeout(): number { return 30000; }
+
+    // Images
+    getImageAutoResize(): boolean { return true; }
+    setImageAutoResize(_enabled: boolean): void { }
+    getBlockImages(): boolean { return false; }
+    setBlockImages(_blocked: boolean): void { }
+    getShowImages(): boolean { return true; }
+    setShowImages(_show: boolean): void { }
+
+    // Shell
+    getShellPath(): string | undefined { return undefined; }
+    setShellPath(_path: string | undefined): void { }
+    getShellCommandPrefix(): string | undefined { return undefined; }
+    setShellCommandPrefix(_prefix: string | undefined): void { }
+
+    // Terminal
+    getClearOnShrink(): boolean { return false; }
+    setClearOnShrink(_enabled: boolean): void { }
+    getShowHardwareCursor(): boolean { return false; }
+    setShowHardwareCursor(_enabled: boolean): void { }
+
+    // UI / display
+    getHideThinkingBlock(): boolean { return false; }
+    setHideThinkingBlock(_hide: boolean): void { }
+    getQuietStartup(): boolean { return true; }
+    setQuietStartup(_quiet: boolean): void { }
+    getCollapseChangelog(): boolean { return false; }
+    setCollapseChangelog(_collapse: boolean): void { }
+    getEditorPaddingX(): number { return 0; }
+    setEditorPaddingX(_padding: number): void { }
+    getAutocompleteMaxVisible(): number { return 5; }
+    setAutocompleteMaxVisible(_maxVisible: number): void { }
+    getCodeBlockIndent(): string { return "  "; }
+    getDoubleEscapeAction(): "fork" | "tree" | "none" { return "tree"; }
+    setDoubleEscapeAction(_action: "fork" | "tree" | "none"): void { }
+
+    // Changelog
+    getLastChangelogVersion(): string | undefined { return undefined; }
+    setLastChangelogVersion(_version: string): void { }
+
+    // Packages & resources
+    getPackages(): unknown[] { return []; }
+    setPackages(_packages: unknown[]): void { }
+    setProjectPackages(_packages: unknown[]): void { }
+    getExtensionPaths(): string[] { return []; }
+    setExtensionPaths(_paths: string[]): void { }
+    setProjectExtensionPaths(_paths: string[]): void { }
+    getSkillPaths(): string[] { return []; }
+    setSkillPaths(_paths: string[]): void { }
+    setProjectSkillPaths(_paths: string[]): void { }
+    getPromptTemplatePaths(): string[] { return []; }
+    setPromptTemplatePaths(_paths: string[]): void { }
+    setProjectPromptTemplatePaths(_paths: string[]): void { }
+    getThemePaths(): string[] { return []; }
+    setThemePaths(_paths: string[]): void { }
+    setProjectThemePaths(_paths: string[]): void { }
+    getEnableSkillCommands(): boolean { return false; }
+    setEnableSkillCommands(_enabled: boolean): void { }
+    getEnabledModels(): string[] | undefined { return undefined; }
+    setEnabledModels(_patterns: string[] | undefined): void { }
 }

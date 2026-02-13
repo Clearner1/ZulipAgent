@@ -7,8 +7,8 @@
  */
 
 import "dotenv/config";
-import { resolve } from "path";
-import { mkdirSync } from "fs";
+import { resolve, join } from "path";
+import { mkdirSync, readdirSync, rmSync, statSync } from "fs";
 import { loadConfig, type BridgeConfig } from "./config.js";
 import { ZulipBot, type ZulipMessage } from "./zulip.js";
 import { getOrCreateRunner, type AgentRunner, type ZulipContext } from "./agent.js";
@@ -74,6 +74,9 @@ async function main(): Promise<void> {
         console.error(`  3. The bot has been created in Zulip Settings → Bots\n`);
         process.exit(1);
     }
+
+    // Sync local topic directories with Zulip
+    await syncLocalTopics(zulip, workspaceDir);
 
     // Create events handler
     const eventHandler: EventHandler = {
@@ -262,6 +265,89 @@ function escapeRegex(str: string): string {
 
 function sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
+}
+
+// ============================================================================
+// Sync local topic directories with Zulip
+// ============================================================================
+
+/** Normalize topic name to directory name (mirrors ChannelStore.sanitize) */
+function topicToDir(name: string): string {
+    return name
+        .replace(/[<>:"/\\|?*]/g, "_")
+        .replace(/\s+/g, "-")
+        .toLowerCase()
+        .slice(0, 100);
+}
+
+/**
+ * Remove local topic directories that no longer exist on Zulip.
+ * Runs once at startup.
+ */
+async function syncLocalTopics(zulip: ZulipBot, workspaceDir: string): Promise<void> {
+    console.log("\n🔄 Syncing local topics with Zulip...");
+
+    // Dirs that are NOT stream/topic data — never delete these
+    const reservedDirs = new Set(["skills", "events"]);
+
+    try {
+        // 1. Build a set of all valid "stream/topic" pairs from Zulip
+        const streams = await zulip.getSubscribedStreams();
+        const zulipTopics = new Set<string>(); // "streamDir/topicDir"
+
+        for (const stream of streams) {
+            const streamDir = topicToDir(stream.name);
+            try {
+                const topics = await zulip.getTopics(stream.streamId);
+                for (const topic of topics) {
+                    zulipTopics.add(`${streamDir}/${topicToDir(topic)}`);
+                }
+            } catch (err: any) {
+                // Can't get topics for this stream (e.g. no permission), skip
+                console.log(`  ⚠️ Cannot read topics for stream "${stream.name}": ${err.message}`);
+            }
+        }
+
+        // 2. Walk local workspace directories
+        let deletedCount = 0;
+
+        const localEntries = readdirSync(workspaceDir);
+        for (const streamEntry of localEntries) {
+            if (reservedDirs.has(streamEntry)) continue;
+
+            const streamPath = join(workspaceDir, streamEntry);
+            if (!statSync(streamPath).isDirectory()) continue;
+
+            // Check if this is a file like MEMORY.md — skip
+            const topicEntries = readdirSync(streamPath);
+            for (const topicEntry of topicEntries) {
+                const topicPath = join(streamPath, topicEntry);
+                if (!statSync(topicPath).isDirectory()) continue;
+
+                const key = `${streamEntry}/${topicEntry}`;
+                if (!zulipTopics.has(key)) {
+                    console.log(`  🗑️  Removing stale topic: ${key}`);
+                    rmSync(topicPath, { recursive: true, force: true });
+                    deletedCount++;
+                }
+            }
+
+            // If stream directory is now empty, remove it too
+            const remaining = readdirSync(streamPath);
+            if (remaining.length === 0) {
+                console.log(`  🗑️  Removing empty stream: ${streamEntry}`);
+                rmSync(streamPath, { recursive: true, force: true });
+            }
+        }
+
+        if (deletedCount === 0) {
+            console.log("  ✅ All local topics are in sync.");
+        } else {
+            console.log(`  ✅ Removed ${deletedCount} stale topic(s).`);
+        }
+    } catch (err: any) {
+        console.error(`  ⚠️ Sync failed (non-fatal): ${err.message}`);
+    }
 }
 
 // ============================================================================
