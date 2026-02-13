@@ -5,13 +5,19 @@
  *   npx tsx task.ts list [today|all|projectId]       # 列出任务（默认 today）
  *   npx tsx task.ts projects                          # 列出所有项目
  *   npx tsx task.ts create /tmp/dida_body.json        # 创建任务（从JSON文件读取）
- *   npx tsx task.ts update /tmp/dida_body.json        # 更新任务（从JSON文件读取）
+ *   npx tsx task.ts update /tmp/dida_body.json        # 更新任务（从JSON文件读取，需含 id 和 projectId）
  *   npx tsx task.ts complete <projectId> <taskId>     # 完成任务
  *   npx tsx task.ts delete <projectId> <taskId>       # 删除任务
+ *   npx tsx task.ts snapshot                          # 保存当前未完成任务快照（早上用）
+ *   npx tsx task.ts completed [YYYY-MM-DD]            # 对比快照找出已完成任务（晚上用）
  */
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
 
 const DIDA_BASE = "https://api.dida365.com/open/v1";
 const TOKEN = process.env.DIDA_ACCESS_TOKEN;
+const SNAPSHOT_DIR = "/tmp/dida_snapshots";
 
 if (!TOKEN) {
     console.error("错误：DIDA_ACCESS_TOKEN 环境变量未设置");
@@ -176,6 +182,17 @@ async function apiPost(path: string, body: any) {
     return res.json();
 }
 
+async function apiDelete(path: string) {
+    const res = await fetch(`${DIDA_BASE}${path}`, {
+        method: "DELETE",
+        headers,
+    });
+    if (!res.ok) throw new Error(`API DELETE ${path} failed: ${res.status} ${await res.text()}`);
+    // DELETE 可能返回 200 或 204（无内容）
+    if (res.status === 204 || res.headers.get("content-length") === "0") return {};
+    try { return await res.json(); } catch { return {}; }
+}
+
 
 // ══════════════════════════════════════════════════════════════
 // 任务处理
@@ -334,8 +351,7 @@ async function listTasks(modeOrProjectId: string) {
 }
 
 async function createTask(inputFile: string) {
-    const fs = await import("fs");
-    const raw = fs.readFileSync(inputFile, "utf-8");
+    const raw = readFileSync(inputFile, "utf-8");
     const body = JSON.parse(raw);
 
     if (!body.title) {
@@ -368,9 +384,182 @@ async function createTask(inputFile: string) {
     );
 }
 
+async function updateTask(inputFile: string) {
+    const raw = readFileSync(inputFile, "utf-8");
+    const body = JSON.parse(raw);
+
+    if (!body.id) {
+        console.error("错误：JSON 文件必须包含 id 字段");
+        process.exit(1);
+    }
+    if (!body.projectId) {
+        console.error("错误：JSON 文件必须包含 projectId 字段");
+        process.exit(1);
+    }
+
+    // 转换日期为 API 格式
+    if (body.startDate && !body.startDate.includes("T")) {
+        body.startDate = toApiDateTime(body.startDate);
+    }
+    if (body.dueDate && !body.dueDate.includes("T")) {
+        body.dueDate = toApiDateTime(body.dueDate);
+    }
+
+    const result = await apiPost(`/task/${body.id}`, body);
+
+    console.log(
+        JSON.stringify({
+            success: true,
+            taskId: result.id,
+            title: result.title,
+            startDate: fromApiDateTime(result.startDate),
+            dueDate: formatDueDate(result.dueDate),
+            priority: result.priority,
+            message: "任务已更新",
+        }),
+    );
+}
+
 async function completeTask(projectId: string, taskId: string) {
-    await apiPost(`/project/${projectId}/task/${taskId}/complete`, {});
+    const res = await fetch(`${DIDA_BASE}/project/${projectId}/task/${taskId}/complete`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({}),
+    });
+    if (!res.ok) throw new Error(`API POST failed: ${res.status} ${await res.text()}`);
+    // 处理无内容响应的情况
     console.log(JSON.stringify({ success: true, message: "任务已完成" }));
+}
+
+async function deleteTask(projectId: string, taskId: string) {
+    await apiDelete(`/project/${projectId}/task/${taskId}`);
+    console.log(JSON.stringify({ success: true, message: "任务已删除" }));
+}
+
+// ══════════════════════════════════════════════════════════════
+// 快照功能（早上保存，晚上对比）
+// ══════════════════════════════════════════════════════════════
+
+interface TaskSnapshot {
+    id: string;
+    title: string;
+    projectId: string;
+    projectName: string;
+    priority: number;
+    startDate?: string;
+    dueDate?: string;
+}
+
+function getSnapshotPath(dateStr?: string): string {
+    mkdirSync(SNAPSHOT_DIR, { recursive: true });
+    const date = dateStr || getNowBeijing().toISOString().split("T")[0];
+    return join(SNAPSHOT_DIR, `${date}.json`);
+}
+
+/** 保存当天任务的快照（每天早上执行） */
+async function snapshotTasks() {
+    const { tasks } = await getAllTasks();
+    const todayTasks = filterTodayTasks(tasks);
+
+    const snapshot: TaskSnapshot[] = todayTasks.map((t) => ({
+        id: t.id,
+        title: t.title,
+        projectId: t.projectId,
+        projectName: t.projectName,
+        priority: t.priority,
+        startDate: t.startDate,
+        dueDate: t.dueDate,
+    }));
+
+    const path = getSnapshotPath();
+    writeFileSync(path, JSON.stringify(snapshot, null, 2), "utf-8");
+
+    console.log(
+        JSON.stringify({
+            success: true,
+            snapshotPath: path,
+            taskCount: snapshot.length,
+            message: `已保存 ${snapshot.length} 个今日任务的快照`,
+        }),
+    );
+}
+
+/** 对比快照找出今天已完成的任务（每天晚上执行） */
+async function completedTasks(dateStr?: string) {
+    const path = getSnapshotPath(dateStr);
+
+    if (!existsSync(path)) {
+        console.log(
+            JSON.stringify({
+                success: false,
+                message: `未找到快照文件：${path}。请先执行 snapshot 命令。`,
+                completed: [],
+            }),
+        );
+        return;
+    }
+
+    const snapshotData: TaskSnapshot[] = JSON.parse(readFileSync(path, "utf-8"));
+    const snapshotIds = new Set(snapshotData.map((t) => t.id));
+    const snapshotMap = new Map(snapshotData.map((t) => [t.id, t]));
+
+    // 获取当前未完成任务
+    const { tasks: currentTasks } = await getAllTasks();
+    const currentUncompletedIds = new Set(
+        currentTasks.filter((t) => !t.isCompleted).map((t) => t.id),
+    );
+
+    // 在快照中存在但当前已不在未完成列表 = 今天完成的
+    const completed: TaskSnapshot[] = [];
+    for (const id of snapshotIds) {
+        if (!currentUncompletedIds.has(id)) {
+            const task = snapshotMap.get(id)!;
+            completed.push(task);
+        }
+    }
+
+    // 在快照中不存在但当前存在 = 今天新增的（仍未完成）
+    const newTasks: SimpleTask[] = currentTasks.filter(
+        (t) => !t.isCompleted && !snapshotIds.has(t.id),
+    );
+
+    // 仍然未完成的（快照中存在且当前仍未完成）
+    const stillPending: TaskSnapshot[] = [];
+    for (const id of snapshotIds) {
+        if (currentUncompletedIds.has(id)) {
+            stillPending.push(snapshotMap.get(id)!);
+        }
+    }
+
+    console.log(
+        JSON.stringify(
+            {
+                success: true,
+                date: dateStr || getNowBeijing().toISOString().split("T")[0],
+                completed: {
+                    count: completed.length,
+                    tasks: completed,
+                },
+                stillPending: {
+                    count: stillPending.length,
+                    tasks: stillPending,
+                },
+                newToday: {
+                    count: newTasks.length,
+                    tasks: newTasks.map((t) => ({
+                        id: t.id,
+                        title: t.title,
+                        projectId: t.projectId,
+                        projectName: t.projectName,
+                        priority: t.priority,
+                    })),
+                },
+                message: `今日完成 ${completed.length} 个，未完成 ${stillPending.length} 个，新增 ${newTasks.length} 个`,
+            },
+            null,
+            2,
+        ),
+    );
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -394,6 +583,13 @@ async function main() {
             }
             await createTask(args[0]);
             break;
+        case "update":
+            if (!args[0]) {
+                console.error("用法: task.ts update <json文件路径>");
+                process.exit(1);
+            }
+            await updateTask(args[0]);
+            break;
         case "complete":
             if (!args[0] || !args[1]) {
                 console.error("用法: task.ts complete <projectId> <taskId>");
@@ -401,8 +597,21 @@ async function main() {
             }
             await completeTask(args[0], args[1]);
             break;
+        case "delete":
+            if (!args[0] || !args[1]) {
+                console.error("用法: task.ts delete <projectId> <taskId>");
+                process.exit(1);
+            }
+            await deleteTask(args[0], args[1]);
+            break;
+        case "snapshot":
+            await snapshotTasks();
+            break;
+        case "completed":
+            await completedTasks(args[0]);
+            break;
         default:
-            console.error("用法: task.ts <projects|list|create|complete> [参数]");
+            console.error("用法: task.ts <projects|list|create|update|complete|delete|snapshot|completed> [参数]");
             process.exit(1);
     }
 }
