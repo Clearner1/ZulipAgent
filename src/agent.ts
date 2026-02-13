@@ -134,6 +134,7 @@ function buildSystemPrompt(
     topic: string,
     memory: string,
     skills: Skill[],
+    agentCwd: string,
 ): string {
     const topicPath = `${workspacePath}/${stream}/${topic}`;
     const eventsPath = `${workspacePath}/events`;
@@ -153,7 +154,7 @@ Mention users with @**username** format.
 
 ## Environment
 You are running directly on the host machine.
-- Bash working directory: ${process.cwd()}
+- Bash working directory: ${agentCwd}
 - Be careful with system modifications
 
 ## Workspace Layout
@@ -314,10 +315,13 @@ function createRunner(
     // Ensure topic directory exists
     mkdirSync(topicDir, { recursive: true });
 
+    // Agent bash working directory
+    const agentCwd = "/Users/loumac/Downloads";
+
     // Load initial resources
     const memory = getMemory(topicDir, workspaceDir);
     const skills = loadBridgeSkills(topicDir, workspaceDir);
-    const systemPrompt = buildSystemPrompt(workspaceDir, safeStream, safeTopic, memory, skills);
+    const systemPrompt = buildSystemPrompt(workspaceDir, safeStream, safeTopic, memory, skills, agentCwd);
 
     // Create session manager (persistent file per topic)
     const contextFile = join(topicDir, "context.jsonl");
@@ -329,8 +333,7 @@ function createRunner(
     authStorage.setRuntimeApiKey(config.llmProvider, config.llmApiKey);
     const modelRegistry = new ModelRegistry(authStorage);
 
-    // Tools: use standard coding tools with Downloads as working directory
-    const agentCwd = "/Users/loumac/Downloads";
+    // Tools: use standard coding tools
     const tools = createCodingTools(agentCwd);
 
     // Create agent
@@ -464,7 +467,7 @@ function createRunner(
             // Refresh system prompt with current memory and skills
             const memory = getMemory(topicDir, workspaceDir);
             const skills = loadBridgeSkills(topicDir, workspaceDir);
-            const freshPrompt = buildSystemPrompt(workspaceDir, safeStream, safeTopic, memory, skills);
+            const freshPrompt = buildSystemPrompt(workspaceDir, safeStream, safeTopic, memory, skills, agentCwd);
             session.agent.setSystemPrompt(freshPrompt);
 
             // Reset per-run state
