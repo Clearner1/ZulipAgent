@@ -4,5 +4,7 @@ dist/
 *.log
 data/*
 !data/skills/
-DiaryMCP/
-task-mcp/
+/DiaryMCP/
+/task-mcp/
+/bb-browser/
+/notebooklm-skill/
