@@ -48,7 +48,10 @@ export class ChannelStore {
      */
     async logMessage(stream: string, topic: string, message: LoggedMessage): Promise<boolean> {
         const dedupeKey = `${stream}:${topic}:${message.ts}`;
+        const caller = new Error().stack?.split('\n')[2]?.trim() || 'unknown';
+        console.log(`[store:debug] logMessage called: key=${dedupeKey} isBot=${message.isBot} text="${message.text?.slice(0, 40)}" caller=${caller}`);
         if (this.recentlyLogged.has(dedupeKey)) {
+            console.log(`[store:debug] DEDUPED: ${dedupeKey}`);
             return false;
         }
 
@@ -64,6 +67,7 @@ export class ChannelStore {
 
         const line = `${JSON.stringify(message)}\n`;
         await appendFile(logPath, line, "utf-8");
+        console.log(`[store:debug] WROTE: ${dedupeKey}`);
         return true;
     }
 

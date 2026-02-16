@@ -291,7 +291,9 @@ export class EventsWatcher {
     }
 
     private execute(filename: string, event: MomEvent, deleteAfter = true): void {
-        const topicKey = `${event.stream}:${event.topic}`;
+        // Resolve template variables in topic
+        const resolvedTopic = this.resolveTopicTemplate(event);
+        const topicKey = `${event.stream}:${resolvedTopic}`;
 
         // Format the event message like mom does
         let schedule = "";
@@ -310,13 +312,25 @@ export class EventsWatcher {
         }
 
         // Trigger the handler
-        this.handler.handleEvent(event.stream, event.topic, eventMessage).catch((err) => {
+        this.handler.handleEvent(event.stream, resolvedTopic, eventMessage).catch((err) => {
             console.error(`[events] Error executing ${filename}:`, err);
         });
 
         if (deleteAfter) {
             this.deleteFile(filename);
         }
+    }
+
+    /** Resolve template variables in topic: {date} → YYYY-MM-DD */
+    private resolveTopicTemplate(event: MomEvent): string {
+        let topic = event.topic;
+        if (topic.includes("{date}")) {
+            const tz = (event as PeriodicEvent).timezone || "Asia/Shanghai";
+            const now = new Date();
+            const dateStr = now.toLocaleDateString("sv-SE", { timeZone: tz }); // sv-SE → YYYY-MM-DD
+            topic = topic.replace("{date}", dateStr);
+        }
+        return topic;
     }
 
     private deleteFile(filename: string): void {

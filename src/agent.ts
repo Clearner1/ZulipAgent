@@ -52,6 +52,29 @@ function buildModel(config: BridgeConfig): Model<"anthropic-messages"> {
     };
 }
 
+// Build browser-specific model (stronger model for bb-browser tasks)
+function buildBrowserModel(config: BridgeConfig): Model<"anthropic-messages"> | null {
+    if (!config.browserModel || !config.browserApiKey) return null;
+    const isThinking = config.browserModel.toLowerCase().includes("thinking");
+    return {
+        id: config.browserModel,
+        name: config.browserModel,
+        api: "anthropic-messages" as const,
+        provider: config.browserProvider || config.llmProvider,
+        baseUrl: config.browserBaseUrl || config.llmBaseUrl,
+        reasoning: isThinking,
+        input: ["text", "image"] as ("text" | "image")[],
+        cost: {
+            input: 15,
+            output: 75,
+            cacheRead: 1.5,
+            cacheWrite: 18.75,
+        },
+        contextWindow: 200000,
+        maxTokens: isThinking ? 128000 : 64000,
+    };
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -331,23 +354,35 @@ function createRunner(
     // Auth storage — register our custom API key so AgentSession can find it
     const authStorage = new AuthStorage(join(homedir(), ".pi", "zulip-bridge", "auth.json"));
     authStorage.setRuntimeApiKey(config.llmProvider, config.llmApiKey);
+    if (config.browserApiKey && config.browserProvider) {
+        authStorage.setRuntimeApiKey(config.browserProvider, config.browserApiKey);
+    }
     const modelRegistry = new ModelRegistry(authStorage);
 
     // Tools: use standard coding tools
     const tools = createCodingTools(agentCwd);
 
+    // Check if this stream should use the stronger browser model
+    const useBrowserModel = config.browserStreams.includes(safeStream);
+    const browserModel = useBrowserModel ? buildBrowserModel(config) : null;
+    const model = browserModel || buildModel(config);
+    const isThinking = model.reasoning === true;
+
+    if (browserModel) {
+        console.log(`[agent] [${stream}/${topic}] Using browser model: ${browserModel.id}${isThinking ? " (thinking)" : ""}`);
+    }
+
     // Create agent
-    const model = buildModel(config);
     const agent = new Agent({
         initialState: {
             systemPrompt,
             model,
-            thinkingLevel: "off",
+            thinkingLevel: isThinking ? "medium" : "off",
             tools,
         },
         convertToLlm,
         getApiKey: async () => {
-            return config.llmApiKey;
+            return browserModel ? (config.browserApiKey || config.llmApiKey) : config.llmApiKey;
         },
     });
 
@@ -449,6 +484,7 @@ function createRunner(
             ctx: ZulipContext,
             channelStore: ChannelStore,
         ): Promise<{ stopReason: string; errorMessage?: string }> {
+            console.log(`[debug:run] ENTER stream=${stream} topic=${topic} ts=${ctx.message.ts} text="${ctx.message.text.slice(0, 40)}"`);
             // Ensure topic directory exists
             await mkdir(topicDir, { recursive: true });
 
@@ -512,6 +548,7 @@ function createRunner(
                 console.log("[agent] Silent response — suppressed output");
             } else if (finalText.trim()) {
                 // Send response to Zulip
+                console.log(`[debug:run] RESPOND len=${finalText.length} text="${finalText.slice(0, 60)}"`);
                 await ctx.respond(finalText);
 
                 // Log bot response

@@ -26,6 +26,10 @@ interface TopicState {
 
 const topicStates = new Map<string, TopicState>();
 
+// Message-level deduplication to prevent processing the same Zulip message twice
+// (Zulip event queue can sometimes deliver duplicate events)
+const processedMessageIds = new Set<number>();
+
 function getState(config: BridgeConfig, stream: string, topic: string): TopicState {
     const key = `${stream}:${topic}`;
     let state = topicStates.get(key);
@@ -176,6 +180,16 @@ async function handleMessage(
     zulip: ZulipBot,
     store: ChannelStore,
 ): Promise<void> {
+    console.log(`[debug:handleMessage] ENTER msgId=${msg.id} content="${msg.content.trim().slice(0, 50)}"`);
+    // Deduplicate: skip if we've already processed this Zulip message ID
+    if (processedMessageIds.has(msg.id)) {
+        console.log(`[dedup] Skipping duplicate message ${msg.id}`);
+        return;
+    }
+    processedMessageIds.add(msg.id);
+    // Auto-clean after 60s to avoid memory leak
+    setTimeout(() => processedMessageIds.delete(msg.id), 60000);
+
     let userText = msg.content.trim();
 
     // Trigger word check
