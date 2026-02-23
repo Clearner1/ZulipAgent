@@ -215,17 +215,87 @@ export class ZulipBot {
         }
     }
 
+    /**
+     * Set typing indicator for direct messages.
+     */
+    async setDirectTyping(userId: number, isTyping: boolean): Promise<void> {
+        try {
+            await this.api("POST", "/typing", {
+                op: isTyping ? "start" : "stop",
+                type: "direct",
+                to: JSON.stringify([userId]),
+            });
+        } catch {
+            // Typing indicators are best-effort
+        }
+    }
+
     // --- Stream & Topic discovery ---
 
     /**
      * Get all streams the bot is subscribed to / can see.
      */
     async getSubscribedStreams(): Promise<{ streamId: number; name: string }[]> {
-        const result = await this.api("GET", "/streams");
-        return (result.streams || []).map((s: any) => ({
+        const result = await this.api("GET", "/users/me/subscriptions");
+        return (result.subscriptions || []).map((s: any) => ({
             streamId: s.stream_id,
             name: s.name,
         }));
+    }
+
+    /**
+     * Sync bot subscriptions to match the given user's subscriptions.
+     * Subscribe to streams the user has, unsubscribe from ones the user doesn't.
+     */
+    async syncSubscriptionsTo(userEmail: string): Promise<void> {
+        // Get user's subscriptions
+        const allUsers = await this.api("GET", "/users");
+        const user = (allUsers.members || []).find((u: any) => u.email === userEmail);
+        if (!user) {
+            console.log(`[sync] User ${userEmail} not found, skipping subscription sync`);
+            return;
+        }
+
+        // Get user's subscriptions via their subscriber status on all streams
+        const allStreams = await this.api("GET", "/streams");
+        const userStreamNames = new Set<string>();
+
+        for (const stream of allStreams.streams || []) {
+            try {
+                const subResult = await this.api("GET", `/streams/${stream.stream_id}/members`);
+                if ((subResult.subscribers || []).includes(user.user_id)) {
+                    userStreamNames.add(stream.name);
+                }
+            } catch {
+                // Can't check this stream, skip
+            }
+        }
+
+        // Get bot's current subscriptions
+        const botStreams = await this.getSubscribedStreams();
+        const botStreamNames = new Set(botStreams.map(s => s.name));
+
+        // Subscribe to streams the user has but bot doesn't
+        const toSubscribe = [...userStreamNames].filter(name => !botStreamNames.has(name));
+        if (toSubscribe.length > 0) {
+            await this.api("POST", "/users/me/subscriptions", {
+                subscriptions: JSON.stringify(toSubscribe.map(name => ({ name }))),
+            });
+            console.log(`[sync] Bot subscribed to: ${toSubscribe.join(", ")}`);
+        }
+
+        // Unsubscribe from streams the user doesn't have
+        const toUnsubscribe = [...botStreamNames].filter(name => !userStreamNames.has(name));
+        if (toUnsubscribe.length > 0) {
+            await this.api("DELETE", "/users/me/subscriptions", {
+                subscriptions: JSON.stringify(toUnsubscribe),
+            });
+            console.log(`[sync] Bot unsubscribed from: ${toUnsubscribe.join(", ")}`);
+        }
+
+        if (toSubscribe.length === 0 && toUnsubscribe.length === 0) {
+            console.log("[sync] Bot subscriptions already in sync with owner");
+        }
     }
 
     /**

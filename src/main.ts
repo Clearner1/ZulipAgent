@@ -79,6 +79,13 @@ async function main(): Promise<void> {
         process.exit(1);
     }
 
+    // Sync bot subscriptions with owner
+    if (config.ownerEmail) {
+        await zulip.syncSubscriptionsTo(config.ownerEmail).catch(err =>
+            console.log(`[sync] Subscription sync failed (non-fatal): ${(err as Error).message}`)
+        );
+    }
+
     // Sync local topic directories with Zulip
     await syncLocalTopics(zulip, workspaceDir);
 
@@ -180,7 +187,7 @@ async function handleMessage(
     zulip: ZulipBot,
     store: ChannelStore,
 ): Promise<void> {
-    console.log(`[debug:handleMessage] ENTER msgId=${msg.id} content="${msg.content.trim().slice(0, 50)}"`);
+    console.log(`[debug:handleMessage] ENTER msgId=${msg.id} type=${msg.type} content="${msg.content.trim().slice(0, 50)}"`);
     // Deduplicate: skip if we've already processed this Zulip message ID
     if (processedMessageIds.has(msg.id)) {
         console.log(`[dedup] Skipping duplicate message ${msg.id}`);
@@ -192,27 +199,29 @@ async function handleMessage(
 
     let userText = msg.content.trim();
 
-    // Trigger word check
-    if (config.triggerWord) {
-        const triggerRegex = new RegExp(
-            `^${escapeRegex(config.triggerWord)}\\b`,
-            "i",
-        );
-        if (!triggerRegex.test(userText)) return;
-        userText = userText.replace(triggerRegex, "").trim();
+    // For stream messages: check trigger word
+    // For DMs: always respond (no trigger needed)
+    if (msg.type === "stream") {
+        if (config.triggerWord) {
+            const triggerRegex = new RegExp(
+                `^${escapeRegex(config.triggerWord)}\\b`,
+                "i",
+            );
+            if (!triggerRegex.test(userText)) return;
+            userText = userText.replace(triggerRegex, "").trim();
+        }
     }
 
     if (!userText) return;
 
-    // Only handle stream messages for now
-    if (msg.type !== "stream") return;
-
-    const stream = msg.displayRecipient;
-    const topic = msg.subject;
+    // Determine stream/topic for both message types
+    const isDM = msg.type === "direct";
+    const stream = isDM ? "_dm" : msg.displayRecipient;
+    const topic = isDM ? msg.senderEmail : msg.subject;
     const topicKey = `${stream}:${topic}`;
 
     console.log(
-        `\n📨 [${stream}/${topic}] ${msg.senderFullName}: ${userText.slice(0, 100)}${userText.length > 100 ? "..." : ""}`,
+        `\n📨 [${isDM ? "DM" : stream}/${topic}] ${msg.senderFullName}: ${userText.slice(0, 100)}${userText.length > 100 ? "..." : ""}`,
     );
 
     // Log user message
@@ -229,15 +238,23 @@ async function handleMessage(
     const state = getState(config, stream, topic);
 
     if (state.running) {
-        await zulip.sendMessage(stream, topic, "⏳ Still working on a previous request...");
+        if (isDM) {
+            await zulip.sendDirectMessage(msg.senderEmail, "⏳ Still working on a previous request...");
+        } else {
+            await zulip.sendMessage(stream, topic, "⏳ Still working on a previous request...");
+        }
         return;
     }
 
     state.running = true;
 
     try {
-        // Show typing
-        await zulip.setTyping(msg.streamId, topic, true);
+        // Show typing (DM uses different API)
+        if (isDM) {
+            await zulip.setDirectTyping(msg.senderId, true);
+        } else {
+            await zulip.setTyping(msg.streamId, topic, true);
+        }
 
         const ctx: ZulipContext = {
             message: {
@@ -247,25 +264,42 @@ async function handleMessage(
                 stream,
                 topic,
                 ts: msg.id.toString(),
+                messageId: msg.id,
             },
             respond: async (text: string) => {
-                await zulip.sendMessage(stream, topic, text);
+                if (isDM) {
+                    await zulip.sendDirectMessage(msg.senderEmail, text);
+                } else {
+                    await zulip.sendMessage(stream, topic, text);
+                }
             },
             setTyping: async (isTyping: boolean) => {
-                await zulip.setTyping(msg.streamId, topic, isTyping);
+                if (isDM) {
+                    await zulip.setDirectTyping(msg.senderId, isTyping);
+                } else {
+                    await zulip.setTyping(msg.streamId, topic, isTyping);
+                }
             },
         };
 
         await state.runner.run(ctx, store);
-        console.log(`✅ [${stream}/${topic}] Done`);
+        console.log(`✅ [${isDM ? "DM" : stream}/${topic}] Done`);
     } catch (err: any) {
-        console.error(`❌ [${stream}/${topic}] Error: ${err.message}`);
+        console.error(`❌ [${isDM ? "DM" : stream}/${topic}] Error: ${err.message}`);
         try {
-            await zulip.sendMessage(stream, topic, `❌ Error: ${err.message}`);
+            if (isDM) {
+                await zulip.sendDirectMessage(msg.senderEmail, `❌ Error: ${err.message}`);
+            } else {
+                await zulip.sendMessage(stream, topic, `❌ Error: ${err.message}`);
+            }
         } catch { }
     } finally {
         state.running = false;
-        await zulip.setTyping(msg.streamId, topic, false);
+        if (isDM) {
+            await zulip.setDirectTyping(msg.senderId, false);
+        } else {
+            await zulip.setTyping(msg.streamId, topic, false);
+        }
     }
 }
 
@@ -302,7 +336,7 @@ async function syncLocalTopics(zulip: ZulipBot, workspaceDir: string): Promise<v
     console.log("\n🔄 Syncing local topics with Zulip...");
 
     // Dirs that are NOT stream/topic data — never delete these
-    const reservedDirs = new Set(["skills", "events"]);
+    const reservedDirs = new Set(["skills", "events", "_dm"]);
 
     try {
         // 1. Build a set of all valid "stream/topic" pairs from Zulip

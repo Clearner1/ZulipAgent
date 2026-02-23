@@ -2,8 +2,7 @@ node_modules/
 dist/
 .env
 *.log
-data/*
-!data/skills/
+data/
 /DiaryMCP/
 /task-mcp/
 /bb-browser/

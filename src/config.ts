@@ -27,6 +27,9 @@ export interface BridgeConfig {
 
     // Trigger
     triggerWord: string;
+
+    // Owner (for subscription sync)
+    ownerEmail: string;
 }
 
 function requireEnv(name: string): string {
@@ -56,5 +59,6 @@ export function loadConfig(): BridgeConfig {
         browserStreams: (process.env.LLM_BROWSER_STREAMS || "").split(",").map(s => s.trim()).filter(Boolean),
         workingDir: process.env.WORKING_DIR || "./data",
         triggerWord: process.env.TRIGGER_WORD || "",
+        ownerEmail: process.env.OWNER_EMAIL || "",
     };
 }
