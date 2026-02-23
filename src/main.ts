@@ -101,10 +101,12 @@ async function main(): Promise<void> {
             const originalModel = config.llmModel;
             const originalBaseUrl = config.llmBaseUrl;
             const originalApiKey = config.llmApiKey;
+            const originalProvider = config.llmProvider;
             if (modelOverride) {
                 config.llmModel = modelOverride;
                 if (config.browserBaseUrl) config.llmBaseUrl = config.browserBaseUrl;
                 if (config.browserApiKey) config.llmApiKey = config.browserApiKey;
+                if (config.browserProvider) config.llmProvider = config.browserProvider;
             }
 
             const state = getState(config, stream, topic);
@@ -114,6 +116,7 @@ async function main(): Promise<void> {
                 config.llmModel = originalModel;
                 config.llmBaseUrl = originalBaseUrl;
                 config.llmApiKey = originalApiKey;
+                config.llmProvider = originalProvider;
             }
 
             if (state.running) return;
