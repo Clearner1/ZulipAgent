@@ -34,9 +34,10 @@ import type { ChannelStore } from "./store.js";
 import { runReflection, runMemoryFlush, runPostRunMemoryExtraction, extractConversationText } from "./reflection.js";
 import type { Model, Api } from "@mariozechner/pi-ai";
 
-// Max context.jsonl file size in bytes before auto-pruning (~800KB ≈ ~160K tokens).
-// The GLM-4.7 model has a 200K context limit; we leave headroom for system prompt.
-const MAX_CONTEXT_FILE_BYTES = 800_000;
+// Max context.jsonl file size in bytes before auto-reset (~300KB ≈ ~60K tokens).
+// GLM-4.7's quality degrades significantly with long contexts (empty responses,
+// thinking/output mismatch). Keep well below the 200K token hard limit.
+const MAX_CONTEXT_FILE_BYTES = 300_000;
 
 // Build model from config — supports custom base URL and model name
 function buildModel(config: BridgeConfig): Model<"anthropic-messages"> {
