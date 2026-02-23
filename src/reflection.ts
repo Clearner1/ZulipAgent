@@ -55,16 +55,16 @@ const REFLECTION_SYSTEM_PROMPT = `You are a reflection engine. Given a list of t
 Rules:
 - Output ONLY bullet points, one per line, starting with "- "
 - Each lesson should be actionable and specific
-- Include the date in parentheses at the end: (YYYY-MM-DD)
+- DO NOT include any date — dates will be added automatically by the system
 - Categorize with a prefix: [环境], [工具], [方案], or [偏好]
 - If there's nothing useful to learn, output exactly: NOTHING
 - Write in Chinese
 - Maximum 5 lessons per reflection
 
 Example output:
-- [环境] 本机没有 pip，使用 pip3 代替 (2026-02-22)
-- [工具] macOS 的 grep 不支持 -P (PCRE)，使用 grep -E 代替 (2026-02-22)
-- [方案] 查询农历日期可以用 lunarcalendar 库: pip3 install lunarcalendar (2026-02-22)`;
+- [环境] 本机没有 pip，使用 pip3 代替
+- [工具] macOS 的 grep 不支持 -P (PCRE)，使用 grep -E 代替
+- [方案] 查询农历日期可以用 lunarcalendar 库: pip3 install lunarcalendar`;
 
 const MEMORY_FLUSH_SYSTEM_PROMPT = `You are a memory extraction engine. You are given a conversation between a user and an AI assistant. Your job is to extract durable, important memories that should be preserved.
 
@@ -149,9 +149,21 @@ export async function runReflection(input: ReflectionInput): Promise<void> {
             return;
         }
 
-        // Append to LESSONS.md
+        // Append to LESSONS.md — stamp each lesson with the real date (LLM can't be trusted with dates)
+        const realDate = new Date().toISOString().slice(0, 10);
+        const stamped = lessons
+            .split("\n")
+            .map(line => {
+                const trimmed = line.trim();
+                if (!trimmed.startsWith("- ")) return line;
+                // Remove any LLM-hallucinated date like (2023-10-27)
+                const cleaned = trimmed.replace(/\s*\(\d{4}-\d{2}-\d{2}\)\s*$/, "");
+                return `${cleaned} (${realDate})`;
+            })
+            .join("\n");
+
         const header = existsSync(lessonsPath) ? "" : "# Andy's Lessons Learned (经验本)\n> Auto-maintained by post-run reflection. Andy can also edit manually.\n";
-        const entry = `${header}\n${lessons}\n`;
+        const entry = `${header}\n${stamped}\n`;
         await appendFile(lessonsPath, entry, "utf-8");
 
         console.log(`[reflection] Recorded ${lessons.split("\n").length} lesson(s) to LESSONS.md`);

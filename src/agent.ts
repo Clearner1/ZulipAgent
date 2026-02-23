@@ -22,7 +22,7 @@ import {
     type Skill,
     createCodingTools,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync, readFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, statSync, writeFileSync } from "fs";
 import { writeFile, mkdir } from "fs/promises";
 import { homedir } from "os";
 import { join, resolve } from "path";
@@ -33,6 +33,10 @@ import { syncLogToSessionManager, BridgeSettingsManager } from "./context.js";
 import type { ChannelStore } from "./store.js";
 import { runReflection, runMemoryFlush, runPostRunMemoryExtraction, extractConversationText } from "./reflection.js";
 import type { Model, Api } from "@mariozechner/pi-ai";
+
+// Max context.jsonl file size in bytes before auto-pruning (~800KB ≈ ~160K tokens).
+// The GLM-4.7 model has a 200K context limit; we leave headroom for system prompt.
+const MAX_CONTEXT_FILE_BYTES = 800_000;
 
 // Build model from config — supports custom base URL and model name
 function buildModel(config: BridgeConfig): Model<"anthropic-messages"> {
@@ -394,10 +398,11 @@ export function getOrCreateRunner(
     config: BridgeConfig,
     stream: string,
     topic: string,
+    forceRecreate = false,
 ): AgentRunner {
     const key = `${stream}:${topic}`;
     const existing = topicRunners.get(key);
-    if (existing) return existing;
+    if (existing && !forceRecreate) return existing;
 
     const runner = createRunner(config, stream, topic);
     topicRunners.set(key, runner);
@@ -462,19 +467,22 @@ function createRunner(
             message: Type.String({ description: "The message to send immediately" }),
         }),
         async execute(toolCallId: string, params: { message: string }) {
-            const text = params.message?.trim();
+            let text = params.message?.trim() || "";
+            // Sanitize: strip leaked think tags
+            if (text.includes("</think>")) { text = text.split("</think>")[0].trim(); }
+            text = text.replace(/<\/?think>/g, "").trim();
             if (!text) {
                 return { content: [{ type: "text" as const, text: "No message provided" }], details: {} };
             }
 
-            // Intercept [SILENT] — don't send anything
-            if (text.includes("[SILENT]")) {
+            // Intercept [SILENT] — don't send anything (case-insensitive)
+            if (/\[silent\]/i.test(text)) {
                 console.log(`[reply-tool] Silent — suppressed`);
                 return { content: [{ type: "text" as const, text: "Silent — no message sent" }], details: {} };
             }
 
-            // Intercept [REACT:emoji] — send emoji reaction instead of text
-            const reactMatch = text.match(/\[REACT:(\w+)\]/);
+            // Intercept [REACT:emoji] — send emoji reaction instead of text (case-insensitive)
+            const reactMatch = text.match(/\[react:(\w+)\]/i);
             if (reactMatch && runState.ctx?.message.messageId) {
                 const emoji = reactMatch[1];
                 try {
@@ -520,7 +528,17 @@ function createRunner(
         },
     });
 
-    // Load existing messages from context.jsonl
+    // Load existing messages from context.jsonl (with size guard)
+    const contextFileSize = existsSync(contextFile) ? statSync(contextFile).size : 0;
+    if (contextFileSize > MAX_CONTEXT_FILE_BYTES) {
+        console.log(
+            `[agent] [${stream}/${topic}] ⚠️ context.jsonl is ${(contextFileSize / 1024).toFixed(0)}KB — exceeds ${(MAX_CONTEXT_FILE_BYTES / 1024).toFixed(0)}KB limit, resetting to prevent overflow`,
+        );
+        writeFileSync(contextFile, "");
+        // Reopen session manager after reset
+        const freshSession = SessionManager.open(contextFile, topicDir);
+        Object.assign(sessionManager, freshSession);
+    }
     const loadedSession = sessionManager.buildSessionContext();
     if (loadedSession.messages.length > 0) {
         agent.replaceMessages(loadedSession.messages);
@@ -715,24 +733,56 @@ function createRunner(
             };
             await writeFile(join(topicDir, "last_prompt.json"), JSON.stringify(debugContext, null, 2));
 
-            // Run the agent
-            await session.prompt(userMessage);
+            // Run the agent (with overflow recovery)
+            try {
+                await session.prompt(userMessage);
+            } catch (promptErr: any) {
+                const errMsg = promptErr?.message || String(promptErr);
+                // Detect context overflow errors (GLM-4 style)
+                if (/input length.*exceeds.*maximum/i.test(errMsg) ||
+                    /request.?too.?large/i.test(errMsg) ||
+                    /context.?overflow/i.test(errMsg)) {
+                    console.log(`[agent] [${stream}/${topic}] ⚠️ Context overflow detected — resetting context and retrying`);
+                    // Clear context file
+                    writeFileSync(contextFile, "");
+                    // Reopen session and retry with just the current message
+                    const freshSessionManager = SessionManager.open(contextFile, topicDir);
+                    Object.assign(sessionManager, freshSessionManager);
+                    agent.replaceMessages([]);
+                    try {
+                        await session.prompt(userMessage);
+                    } catch (retryErr: any) {
+                        console.error(`[agent] [${stream}/${topic}] Retry after overflow reset also failed: ${retryErr?.message}`);
+                        throw retryErr;
+                    }
+                } else {
+                    throw promptErr;
+                }
+            }
 
             // Extract final text
             const messages = session.messages;
             const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
-            const finalText =
-                lastAssistant?.content
+            const finalText = (() => {
+                let text = lastAssistant?.content
                     .filter((c): c is { type: "text"; text: string } => c.type === "text")
                     .map((c) => c.text)
                     .join("\n") || "";
+                // Sanitize: strip leaked </think> tags and anything after
+                if (text.includes("</think>")) {
+                    text = text.split("</think>")[0].trim();
+                }
+                // Sanitize: strip leaked <think> tags
+                text = text.replace(/<\/?think>/g, "").trim();
+                return text;
+            })();
 
-            // Handle [SILENT] responses (flexible match — model may add prefixes)
-            if (finalText.includes("[SILENT]")) {
+            // Handle [SILENT] responses (case-insensitive, flexible match)
+            if (/\[silent\]/i.test(finalText)) {
                 console.log("[agent] Silent response — suppressed output");
-            } else if (/\[REACT:(\w+)\]/.test(finalText)) {
+            } else if (/\[react:(\w+)\]/i.test(finalText)) {
                 // Handle [REACT:emoji] — send emoji reaction instead of text
-                const emojiMatch = finalText.match(/\[REACT:(\w+)\]/);
+                const emojiMatch = finalText.match(/\[react:(\w+)\]/i);
                 if (emojiMatch && ctx.message.messageId) {
                     const emoji = emojiMatch[1];
                     try {

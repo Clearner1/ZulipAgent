@@ -19,6 +19,7 @@ import {
     statSync,
     unlinkSync,
     watch,
+    writeFileSync,
 } from "fs";
 import { readFile } from "fs/promises";
 import { join } from "path";
@@ -32,6 +33,7 @@ interface ImmediateEvent {
     stream: string;
     topic: string;
     text: string;
+    model?: string; // optional model override
 }
 
 interface OneShotEvent {
@@ -40,6 +42,7 @@ interface OneShotEvent {
     topic: string;
     text: string;
     at: string; // ISO 8601 with timezone offset
+    model?: string;
 }
 
 interface PeriodicEvent {
@@ -49,6 +52,7 @@ interface PeriodicEvent {
     text: string;
     schedule: string; // cron expression
     timezone: string; // IANA timezone
+    model?: string;
 }
 
 type MomEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
@@ -59,7 +63,7 @@ type MomEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
 
 export interface EventHandler {
     isRunning(topicKey: string): boolean;
-    handleEvent(stream: string, topic: string, text: string): Promise<void>;
+    handleEvent(stream: string, topic: string, text: string, modelOverride?: string): Promise<void>;
 }
 
 // ============================================================================
@@ -81,6 +85,7 @@ export class EventsWatcher {
     constructor(
         private eventsDir: string,
         private handler: EventHandler,
+        private workspaceDir?: string,
     ) {
         this.startTime = Date.now();
         mkdirSync(eventsDir, { recursive: true });
@@ -311,10 +316,22 @@ export class EventsWatcher {
             return;
         }
 
+        // Detect evening-report events for post-run context cleanup
+        const isEveningReport = filename.toLowerCase().includes("evening-report") ||
+            event.text.toLowerCase().includes("evening-report");
+
         // Trigger the handler
-        this.handler.handleEvent(event.stream, resolvedTopic, eventMessage).catch((err) => {
-            console.error(`[events] Error executing ${filename}:`, err);
-        });
+        this.handler.handleEvent(event.stream, resolvedTopic, eventMessage, event.model)
+            .then(() => {
+                // P2: After evening-report completes, auto-clear context.jsonl
+                // This is the code-level guarantee that context won't grow unbounded.
+                if (isEveningReport && this.workspaceDir) {
+                    this.clearTopicContext(event.stream, resolvedTopic);
+                }
+            })
+            .catch((err) => {
+                console.error(`[events] Error executing ${filename}:`, err);
+            });
 
         if (deleteAfter) {
             this.deleteFile(filename);
@@ -347,6 +364,25 @@ export class EventsWatcher {
     private sleep(ms: number): Promise<void> {
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
+
+    /**
+     * Clear context.jsonl for a topic — used after evening-report to implement daily closure.
+     * This ensures the context file doesn't grow unbounded across days.
+     */
+    private clearTopicContext(stream: string, topic: string): void {
+        if (!this.workspaceDir) return;
+        const sanitize = (name: string) =>
+            name.replace(/[<>:"/\\|?*]/g, "_").replace(/\s+/g, "-").toLowerCase().slice(0, 100);
+        const contextFile = join(this.workspaceDir, sanitize(stream), sanitize(topic), "context.jsonl");
+        if (existsSync(contextFile)) {
+            try {
+                writeFileSync(contextFile, "");
+                console.log(`[events] 🧹 Cleared context.jsonl for ${stream}/${topic} (daily closure)`);
+            } catch (err) {
+                console.error(`[events] Failed to clear context: ${(err as Error).message}`);
+            }
+        }
+    }
 }
 
 /**
@@ -357,7 +393,7 @@ export function createEventsWatcher(
     handler: EventHandler,
 ): EventsWatcher {
     const eventsDir = join(workspaceDir, "events");
-    const watcher = new EventsWatcher(eventsDir, handler);
+    const watcher = new EventsWatcher(eventsDir, handler, workspaceDir);
     watcher.start();
     return watcher;
 }

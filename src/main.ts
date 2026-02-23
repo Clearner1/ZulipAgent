@@ -96,17 +96,36 @@ async function main(): Promise<void> {
             return state?.running ?? false;
         },
 
-        async handleEvent(stream: string, topic: string, text: string): Promise<void> {
+        async handleEvent(stream: string, topic: string, text: string, modelOverride?: string): Promise<void> {
+            // Temporarily override model for runner creation if specified
+            const originalModel = config.llmModel;
+            const originalBaseUrl = config.llmBaseUrl;
+            const originalApiKey = config.llmApiKey;
+            if (modelOverride) {
+                config.llmModel = modelOverride;
+                if (config.browserBaseUrl) config.llmBaseUrl = config.browserBaseUrl;
+                if (config.browserApiKey) config.llmApiKey = config.browserApiKey;
+            }
+
             const state = getState(config, stream, topic);
+
+            // Restore config immediately after getState (runner is now cached)
+            if (modelOverride) {
+                config.llmModel = originalModel;
+                config.llmBaseUrl = originalBaseUrl;
+                config.llmApiKey = originalApiKey;
+            }
+
             if (state.running) return;
 
             state.running = true;
-            console.log(`\n⏰ [EVENT] [${stream}/${topic}] ${text.slice(0, 80)}`);
+            if (modelOverride) {
+                console.log(`\n⏰ [EVENT] [${stream}/${topic}] (model: ${modelOverride}) ${text.slice(0, 60)}`);
+            } else {
+                console.log(`\n⏰ [EVENT] [${stream}/${topic}] ${text.slice(0, 80)}`);
+            }
 
             try {
-                // Show typing
-                // (we don't have streamId for events, so skip typing indicator)
-
                 const ctx: ZulipContext = {
                     message: {
                         text,
@@ -117,10 +136,7 @@ async function main(): Promise<void> {
                         ts: Date.now().toString(),
                     },
                     respond: async (reply: string) => {
-                        // Check for [SILENT] before sending
-                        if (reply.trim() === "[SILENT]" || reply.trim().startsWith("[SILENT]")) {
-                            return;
-                        }
+                        if (/\[silent\]/i.test(reply)) return;
                         await zulip.sendMessage(stream, topic, reply);
                     },
                     setTyping: async () => { },
